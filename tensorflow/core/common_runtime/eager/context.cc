@@ -40,8 +40,8 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/device_resolver_local.h"
 #include "tensorflow/core/common_runtime/device_set.h"
 #include "tensorflow/core/common_runtime/process_util.h"
-#include "tensorflow/core/framework/graph_def_util.h"
 #include "tensorflow/core/framework/function.h"
+#include "tensorflow/core/framework/graph_def_util.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/protobuf/config.pb.h"
 #include "tensorflow/core/public/version.h"
@@ -79,6 +79,7 @@ EagerContext::EagerContext(
     ContextDevicePlacementPolicy default_device_placement_policy, bool async,
     DeviceMgr* device_mgr, bool device_mgr_owned, Rendezvous* rendezvous,
     DistributedFunctionLibraryRuntime* cluster_flr,
+    CollectiveExecutorMgrInterface* collective_executor_mgr,
     bool run_eager_op_as_function)
     : ImmediateExecutionContext(kEager),
       opts_(opts),
@@ -96,6 +97,7 @@ EagerContext::EagerContext(
       default_executor_(async),
       log_memory_(LogMemory::IsEnabled()),
       env_(opts.env),
+      collective_executor_mgr_(collective_executor_mgr, /*owned=*/false),
       use_send_tensor_rpc_(false),
       pin_small_ops_to_cpu_(ReadBoolFromEnvVar(
           "TF_EAGER_ENABLE_SMALL_TENSOR_CPU_PINNING", false)),
@@ -119,20 +121,18 @@ EagerContext::EagerContext(
   context_view_id_ = 0;
 #endif  // IS_MOBILE_PLATFORM
 
-  std::unique_ptr<DeviceResolverInterface> drl(
-      new DeviceResolverLocal(local_device_mgr()));
-  std::unique_ptr<ParamResolverInterface> cprl(new CollectiveParamResolverLocal(
-      opts.config, local_device_mgr(), drl.get(),
-      "/job:localhost/replica:0/task:0"));
-  collective_executor_mgr_.Reset(
-      new CollectiveExecutorMgr(opts.config, local_device_mgr(), std::move(drl),
-                                std::move(cprl), MaybeCreateNcclCommunicator()),
-      /*owned=*/true);
+  // TODO(yuefengz): consider creating a new RpcCollectiveExecutorMgr each
+  // time.
+  if (collective_executor_mgr_.Get() == nullptr) {
+    collective_executor_mgr_.Reset(CreateProdLocalCollectiveExecutorMgr(
+        opts.config, local_device_mgr(),
+        MaybeCreateNcclCommunicator(opts.config)));
+  }
   global_rendezvous_for_functions_ =
       core::RefCountPtr<Rendezvous>(CreateRendezvous(-1));
 }
 
-AbstractTensorInterface* EagerContext::CreateInt64Scalar(int64 value) {
+AbstractTensorInterface* EagerContext::CreateInt64Scalar(int64_t value) {
   return new TensorInterface(Tensor(value));
 }
 
@@ -608,28 +608,15 @@ void EagerContext::ListDevices(
 }
 
 Status EagerContext::AddDevices(std::vector<std::unique_ptr<Device>> devices) {
-  std::vector<std::unique_ptr<Device>> local_devices, remote_devices;
-  while (!devices.empty()) {
-    if (devices.front()->IsLocal()) {
-      local_devices.push_back(std::move(devices.front()));
-    } else {
-      remote_devices.push_back(std::move(devices.front()));
-    }
-    devices.erase(devices.begin());
+  if (!devices.empty() && devices[0]->device_type() != "CPU") {
+    return errors::InvalidArgument(
+        "Device: ", devices[0]->device_type(), " is not allowed to be added ",
+        "after the context is initialized. Currently allowed device: CPU. ",
+        "May update this API to allow adding more types of devices.");
   }
   TF_RETURN_IF_ERROR(
       reinterpret_cast<DynamicDeviceMgr*>(local_device_manager_.Get())
-          ->AddDevices(std::move(local_devices)));
-
-  if (!remote_devices.empty()) {
-    if (!remote_device_mgr()) {
-      remote_device_manager_.Reset(
-          std::make_unique<tensorflow::DynamicDeviceMgr>());
-    }
-    TF_RETURN_IF_ERROR(
-        reinterpret_cast<DynamicDeviceMgr*>(remote_device_manager_.Get())
-            ->AddDevices(std::move(remote_devices)));
-  }
+          ->AddDevices(std::move(devices)));
 
   // Add the devices to pflr's device set.
   pflr_->InitializeDeviceAndFlr();
@@ -1124,7 +1111,7 @@ Status EagerContext::StoreCollectiveOpsServer(
     }
     local_device_manager_.Reset(device_mgr);
     if (rendezvous_ != nullptr) rendezvous_->Unref();
-    rendezvous_ = CreateRendezvous(-1);
+    rendezvous_ = new IntraProcessRendezvous(local_device_manager_.Get());
   }
   host_cpu_device_ = local_device_manager_.Get()->HostCPU();
 
@@ -1238,12 +1225,6 @@ void EagerContext::FilterDevicesForRemoteWorkers(
       }
     }
   }
-}
-
-void EagerContext::SetWorkerEnv(WorkerEnv* worker_env,
-                                std::shared_ptr<WorkerSession> worker_session) {
-  worker_env_ = worker_env;
-  worker_session_ = worker_session;
 }
 
 Status EagerContext::InitializeRemoteMaster(

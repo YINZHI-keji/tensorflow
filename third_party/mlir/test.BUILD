@@ -2,7 +2,7 @@
 # See https://llvm.org/LICENSE.txt for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-load("@org_tensorflow//third_party/mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
+load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
 
 package(
     default_visibility = [":test_friends"],
@@ -78,6 +78,13 @@ gentbl_cc_library(
             "lib/Dialect/Test/TestOpsDialect.h.inc",
         ),
         (
+            [
+                "-gen-dialect-defs",
+                "-dialect=test",
+            ],
+            "lib/Dialect/Test/TestOpsDialect.cpp.inc",
+        ),
+        (
             ["-gen-enum-decls"],
             "lib/Dialect/Test/TestOpEnums.h.inc",
         ),
@@ -110,6 +117,14 @@ gentbl_cc_library(
     name = "TestInterfacesIncGen",
     strip_include_prefix = "lib/Dialect/Test",
     tbl_outs = [
+        (
+            ["-gen-attr-interface-decls"],
+            "lib/Dialect/Test/TestAttrInterfaces.h.inc",
+        ),
+        (
+            ["-gen-attr-interface-defs"],
+            "lib/Dialect/Test/TestAttrInterfaces.cpp.inc",
+        ),
         (
             ["-gen-type-interface-decls"],
             "lib/Dialect/Test/TestTypeInterfaces.h.inc",
@@ -218,12 +233,13 @@ cc_library(
         "@llvm-project//mlir:Dialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:InferTypeOpInterface",
-        "@llvm-project//mlir:MemRefDialect",
+        "@llvm-project//mlir:LLVMDialect",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:Reducer",
         "@llvm-project//mlir:SideEffects",
         "@llvm-project//mlir:StandardOps",
         "@llvm-project//mlir:StandardOpsTransforms",
+        "@llvm-project//mlir:TensorDialect",
         "@llvm-project//mlir:TransformUtils",
         "@llvm-project//mlir:Transforms",
     ],
@@ -307,10 +323,11 @@ cc_library(
     includes = ["lib/Dialect/Test"],
     deps = [
         ":TestDialect",
+        "@llvm-project//mlir:LLVMCommonConversion",
         "@llvm-project//mlir:LLVMDialect",
-        "@llvm-project//mlir:LLVMTransforms",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:StandardOps",
+        "@llvm-project//mlir:StandardToLLVM",
     ],
 )
 
@@ -417,6 +434,7 @@ cc_library(
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:SCFTransforms",
         "@llvm-project//mlir:TransformUtils",
     ],
 )
@@ -507,6 +525,7 @@ cc_library(
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:StandardOps",
+        "@llvm-project//mlir:TensorDialect",
         "@llvm-project//mlir:TosaDialect",
         "@llvm-project//mlir:Transforms",
     ],

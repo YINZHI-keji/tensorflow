@@ -33,6 +33,7 @@ limitations under the License.
 #include "tensorflow/lite/core/api/op_resolver.h"
 #include "tensorflow/lite/core/macros.h"
 #include "tensorflow/lite/core/subgraph.h"
+#include "tensorflow/lite/internal/signature_def.h"
 #include "tensorflow/lite/interpreter.h"
 #include "tensorflow/lite/kernels/internal/compatibility.h"
 #include "tensorflow/lite/model_builder.h"
@@ -170,12 +171,14 @@ TFLITE_ATTRIBUTE_WEAK Interpreter::TfLiteDelegatePtr AcquireFlexDelegate() {
 #if !defined(TFLITE_IS_MOBILE_PLATFORM)
   // Load TF_AcquireFlexDelegate() from _pywrap_tensorflow_internal.so if it is
   // available.
-  const char* filename_pywrap_tensorflow_internal =
 #if defined(_WIN32)
-      "_pywrap_tensorflow_internal.pyd";
+  const wchar_t* filename_pywrap_tensorflow_internal =
+      L"_pywrap_tensorflow_internal.pyd";
 #elif defined(__APPLE__)
+  const char* filename_pywrap_tensorflow_internal =
       "python/_pywrap_tensorflow_internal.so";
 #else
+  const char* filename_pywrap_tensorflow_internal =
       "_pywrap_tensorflow_internal.so";
 #endif
   void* lib_tf_internal =
@@ -183,7 +186,7 @@ TFLITE_ATTRIBUTE_WEAK Interpreter::TfLiteDelegatePtr AcquireFlexDelegate() {
 #if defined(_WIN32)
   if (lib_tf_internal == nullptr) {
     lib_tf_internal = SharedLibrary::LoadLibrary(
-        "_pywrap_tensorflow_interpreter_wrapper.pyd");
+        L"_pywrap_tensorflow_interpreter_wrapper.pyd");
   }
 #endif
   if (lib_tf_internal) {
@@ -504,7 +507,7 @@ TfLiteStatus InterpreterBuilder::ParseSignatureDefs(
   if (signature_def_list == nullptr || signature_def_list->size() == 0) {
     return kTfLiteOk;
   }
-  std::vector<Interpreter::SignatureDef> signature_defs;
+  std::vector<internal::SignatureDef> signature_defs;
   signature_defs.reserve(signature_def_list->size());
   for (const auto fb_signature_def : *signature_def_list) {
     if (fb_signature_def == nullptr) {
@@ -536,6 +539,7 @@ TfLiteStatus InterpreterBuilder::ParseSignatureDefs(
     if (fb_signature_def->key() != nullptr) {
       signature_def.signature_def_key = fb_signature_def->key()->c_str();
     }
+    signature_def.subgraph_index = fb_signature_def->subgraph_index();
   }
   interpreter->SetSignatureDef(std::move(signature_defs));
   return kTfLiteOk;
@@ -757,9 +761,9 @@ TfLiteStatus InterpreterBuilder::operator()(
         (*interpreter)->subgraph(subgraph_index);
     auto operators = subgraph->operators();
     auto tensors = subgraph->tensors();
-    if (!operators || !tensors) {
+    if (!tensors) {
       TF_LITE_REPORT_ERROR(error_reporter_,
-                           "Did not get operators or tensors in subgraph %d.\n",
+                           "Did not get tensors in subgraph %d.\n",
                            subgraph_index);
       return cleanup_and_error();
     }
@@ -778,7 +782,7 @@ TfLiteStatus InterpreterBuilder::operator()(
     // nodes.
     if (ParseTensors(buffers, tensors, modified_subgraph) != kTfLiteOk)
       return cleanup_and_error();
-    if (ParseNodes(operators, modified_subgraph) != kTfLiteOk)
+    if (operators && ParseNodes(operators, modified_subgraph) != kTfLiteOk)
       return cleanup_and_error();
 
     std::vector<int> variables;

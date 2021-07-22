@@ -18,6 +18,7 @@ limitations under the License.
 #ifndef HLO_OPS
 #define HLO_OPS
 
+include "mlir/Dialect/Shape/IR/ShapeBase.td"
 include "mlir/IR/OpBase.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
@@ -94,7 +95,7 @@ def HLO_IotaOp : HLO_Op<"iota", [NoSideEffect]> {
   let hasFolder = 1;
 }
 
-def HLO_DynamicIotaOp: HLO_Op<"dynamic_iota", [NoSideEffect]> {
+def HLO_DynamicIotaOp: HLO_ShapedInterfaceOp<"dynamic_iota", [NoSideEffect]> {
   let summary = "Create linear increasing values from 0 to length -1.";
   let description = [{
     Produces an HLO Tensor of the specified shape, with an incremental set of
@@ -146,9 +147,9 @@ class HLO_UnaryElementwiseOp<string mnemonic, list<OpTrait> traits,
     LogicalResult reifyReturnTypeShapes(
         OpBuilder& builder, ValueRange operands,
         SmallVectorImpl<Value>& reifiedReturnShapes) {
-      return ::mlir::mhlo::deriveShapeFromFirstOperand(&builder, getOperation(),
-                                                       operands,
-                                                       &reifiedReturnShapes);
+      return ::mlir::mhlo::deriveShapeFromOperand(&builder, getOperation(),
+                                                  operands.front(),
+                                                  &reifiedReturnShapes);
     }
     bool inferInputOutputShapeEquality(int input, int output) {
       return true;
@@ -206,6 +207,8 @@ def HLO_ConvertOp : HLO_UnaryElementwiseOp<"convert",
     OpBuilder<(ins "Value":$operand, "Type":$result_element_ty)>];
 
   let hasFolder = 1;
+
+  let hasCanonicalizer = 1;
 
   let hasCustomHLOConverter = 1;
 }
@@ -461,9 +464,9 @@ class HLO_BinaryElementwiseOp<string mnemonic, list<OpTrait> traits> :
     LogicalResult reifyReturnTypeShapes(
         OpBuilder& builder, ValueRange operands,
         SmallVectorImpl<Value>& reifiedReturnShapes) {
-      return ::mlir::mhlo::deriveShapeFromFirstOperand(&builder, getOperation(),
-                                                       operands,
-                                                       &reifiedReturnShapes);
+      return ::mlir::mhlo::deriveShapeFromOperand(&builder, getOperation(),
+                                                  operands.front(),
+                                                  &reifiedReturnShapes);
     }
     bool inferInputsShapeEquality(int lhs, int rhs) {
       return true;
@@ -904,11 +907,11 @@ def HLO_WhileOp: HLO_Op<"while", [
 
     See https://www.tensorflow.org/xla/operation_semantics#while.
   }];
-  let arguments = (ins HLO_TensorOrTuple:$val);
+  let arguments = (ins Variadic<HLO_TensorOrTuple>:$arg);
 
   let regions = (region SizedRegion<1>:$cond, SizedRegion<1>:$body);
 
-  let results = (outs HLO_TensorOrTuple);
+  let results = (outs Variadic<HLO_TensorOrTuple>);
 
   // TODO(b/129422361): WhileOp has special conversion logic to HLO.
   let hasCustomHLOConverter = 1;
@@ -954,6 +957,26 @@ def HLO_AllReduceOp : HLO_Op<"all_reduce",
   let hasCustomHLOConverter = 1;
 }
 
+def HLO_ReduceScatterOp : HLO_Op<"reduce_scatter",
+    [SameOperandsAndResultElementType]> {
+  let summary = "ReduceScatter operator";
+  let description = [{
+     Performs all_reduce followed by a scatter.
+
+     See https://www.tensorflow.org/xla/operation_semantics#reducescatter
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    I64Attr:$scatter_dimension,
+    I64ElementsAttr:$replica_groups,
+    OptionalAttr<ChannelHandle>:$channel_handle
+  );
+  let regions = (region SizedRegion<1>:$computation);
+  let results = (outs HLO_Tensor);
+  let hasCustomHLOConverter = 1;
+}
+
 def HLO_AllToAllOp : HLO_Op<"all_to_all",
     [NoSideEffect, SameOperandsElementType, SameOperandsShape]> {
 
@@ -967,7 +990,7 @@ def HLO_AllToAllOp : HLO_Op<"all_to_all",
   let results = (outs HLO_Tensor);
 }
 
-def HLO_ReduceOp: HLO_Op<"reduce", [
+def HLO_ReduceOp: HLO_ShapedInterfaceOp<"reduce", [
       RecursiveSideEffects,
       SameVariadicOperandSize,
       SingleBlockImplicitTerminator<"ReturnOp">,
@@ -1140,8 +1163,8 @@ def HLO_DynamicUpdateSliceOp: HLO_Op<"dynamic-update-slice",
     HLO_Tensor:$update,
     Variadic<HLO_ScalarIntTensor>:$start_indices
   );
-
   let results = (outs HLO_Tensor:$result);
+  let hasFolder = 1;
 }
 
 
@@ -1341,8 +1364,8 @@ def HLO_CholeskyOp : HLO_Op<"cholesky",
   let results = (outs HLO_FpOrComplexTensor);
 }
 
-def HLO_ClampOp : HLO_Op<"clamp",
-      [NoSideEffect, SameOperandsAndResultElementType]> {
+def HLO_ClampOp : HLO_Op<"clamp", [NoSideEffect,
+  SameOperandsAndResultElementType, HLO_BroadcastingElementwise]> {
   let summary = "Clamp operator";
   let description = [{
     Clamps an operand to within the range between a minimum and maximum value.
@@ -1353,16 +1376,16 @@ def HLO_ClampOp : HLO_Op<"clamp",
 
     See https://www.tensorflow.org/xla/operation_semantics#clamp.
   }];
+
   let arguments = (ins
     HLO_Tensor:$min,
     HLO_Tensor:$operand,
     HLO_Tensor:$max
   );
-
   let results = (outs HLO_Tensor);
 }
 
-def HLO_ConcatenateOp : HLO_Op<"concatenate",
+def HLO_ConcatenateOp : HLO_ShapedInterfaceOp<"concatenate",
     [NoSideEffect, SameOperandsAndResultElementType,
      DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
   let summary = "XLA's concatenate op";
@@ -1598,7 +1621,7 @@ def HLO_FftOp: HLO_Op<"fft", [NoSideEffect]> {
   let results = (outs HLO_Tensor);
 }
 
-def HLO_GatherOp: HLO_Op<"gather", [NoSideEffect]> {
+def HLO_GatherOp: HLO_ShapedInterfaceOp<"gather", [NoSideEffect]> {
   let arguments = (ins
     HLO_Tensor:$operand,
     HLO_IntTensor:$start_indices,
@@ -1723,11 +1746,10 @@ def HLO_ScatterOp: HLO_Op<"scatter", [RecursiveSideEffects]> {
 }
 
 // TODO(jpienaar): Add broadcastable trait.
-def HLO_SelectOp: HLO_Op<"select", [NoSideEffect,
+def HLO_SelectOp: HLO_Op<"select", [NoSideEffect, HLO_BroadcastingElementwise,
     DeclareOpInterfaceMethods<InferShapedTypeOpInterface,
     ["inferReturnTypeComponents", "reifyReturnTypeShapes"]>,
-    DeclareOpInterfaceMethods<InferTypeOpInterface>,
-    ]> {
+    DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
   let summary = "Select operator";
   let description = [{
     Constructs an output tensor from the elements of `on_true` and `on_false`
@@ -1819,6 +1841,8 @@ def HLO_SortOp : HLO_Op<"sort", [RecursiveSideEffects,
 
   // TODO(b/129422361): SortOp has special conversion logic to HLO.
   let hasCustomHLOConverter = 1;
+
+  let hasCanonicalizer = 1;
 }
 
 def HLO_ReverseOp: HLO_Op<"reverse",
@@ -1881,7 +1905,7 @@ def HLO_TraceOp: HLO_Op<"trace", []> {
   let hasCustomHLOConverter = 1;
 }
 
-def HLO_TransposeOp: HLO_Op<"transpose",
+def HLO_TransposeOp: HLO_ShapedInterfaceOp<"transpose",
       [NoSideEffect, SameOperandsAndResultElementType]> {
   let summary = "Transpose operator";
   let description = [{
@@ -2199,7 +2223,7 @@ def HLO_ReducePrecisionOp :
   let results = (outs HLO_FpTensor:$output);
 }
 
-def HLO_RealDynamicSliceOp: HLO_Op<
+def HLO_RealDynamicSliceOp: HLO_ShapedInterfaceOp<
       "real_dynamic_slice",
       [NoSideEffect, AllElementTypesMatch<["operand", "result"]>,
        AllTypesMatch<["start_indices", "limit_indices", "strides"]>]> {
@@ -2217,10 +2241,11 @@ def HLO_RealDynamicSliceOp: HLO_Op<
     HLO_DimensionTensor:$strides
   );
   let results = (outs HLO_Tensor:$result);
+  let hasCanonicalizer = 1;
   let hasCustomHLOConverter = 1;
 }
 
-def HLO_DynamicPadOp: HLO_Op<"dynamic_pad",
+def HLO_DynamicPadOp: HLO_ShapedInterfaceOp<"dynamic_pad",
       [NoSideEffect, AllElementTypesMatch<["operand", "padding_value", "result"]>,
       AllTypesMatch<["edge_padding_low", "edge_padding_high", "interior_padding"]>]> {
   let summary = "Dynamic Pad operator";
@@ -2248,7 +2273,7 @@ def HLO_DynamicPadOp: HLO_Op<"dynamic_pad",
   let hasCustomHLOConverter = 1;
 }
 
-def HLO_DynamicGatherOp: HLO_Op<"dynamic_gather", [NoSideEffect]> {
+def HLO_DynamicGatherOp: HLO_ShapedInterfaceOp<"dynamic_gather", [NoSideEffect]> {
   string summary = "Dynamic Gather operator";
   string description = [{
     The dynamic shape version of GatherOp. Stitches together several slices of an input
@@ -2280,6 +2305,70 @@ def HLO_DynamicConvOp : HLO_Op<"dynamic_conv", [NoSideEffect]>, BASE_HLO_ConvOp 
        HLO_Tensor:$d_padding),
     ConvolutionAttributes.attributes);
   let results = (outs HLO_Tensor);
+  let hasCustomHLOConverter = 1;
+}
+  
+def HLO_PrintOp : HLO_Op<"print", []> {
+  let summary = "Print operation";
+  let description = [{
+    PrintOp is used to print tensor, which can be used to debug.
+  }];
+
+  let arguments = (ins
+      HLO_Tensor:$input
+  );
+
+  let results = (outs
+    HLO_Tensor:$output
+  );
+
+  let hasCustomHLOConverter = 1;
+}
+
+def HLO_ComputeReshapeShapeOp :
+    HLO_Op<"compute_reshape_shape", [NoSideEffect]> {
+  string summary = "Compute input for reshape with any dynamic dim resolved";
+
+  string description = [{
+    This operation handles the dynamic aspect of a TF/NumPy/CHLO reshape. The
+    dynamic aspect is that a single extent can be -1 and that dimension will
+    instead be computed. This handles the computation and can then be passed to
+    an HLO DynamicReshapeOp to replicate the TF/NumPy reshape behavior.
+
+    This op has undefined behavior if the dimensions do not evenly divide the
+    number of elements, or if there are multiple -1 values. It is an identity op
+    if no dimensions are -1.
+
+    ```
+    %0 = hlo.compute_reshape_shape 12, [2, -1] -> [2, 6]
+    ```
+  }];
+
+  let arguments = (ins Index:$num_elements, 1DTensorOf<[AnyInteger, Index]>:$dynamic_shape);
+  let results = (outs 1DTensorOf<[AnyInteger, Index]>:$result);
+
+  let assemblyFormat = "$num_elements `,` $dynamic_shape attr-dict `:` type($num_elements) `,` type($dynamic_shape) `->` type($result)";
+  let hasCustomHLOConverter = 1;
+}
+
+def HLO_CstrReshapableOp :
+    HLO_Op<"cstr_reshapable", [NoSideEffect]> {
+  string summary = "Compute input for reshape with any dynamic dim resolved";
+
+  string description = [{
+    This operation creates a witness on the constraint that a given shape would
+    be a valid reshape for the given number of elements.
+
+    ```
+    %0 = mhlo.cstr_reshapable 12, [2, -1] -> success
+    %1 = mhlo.cstr_reshapable 13, [2, -1] -> failure ```
+  }];
+
+  let arguments = (ins Index:$num_elements, 1DTensorOf<[AnyInteger, Index]>:$dynamic_shape);
+  let results = (outs Shape_WitnessType:$result);
+
+  let assemblyFormat = "$num_elements `,` $dynamic_shape attr-dict `:` type($num_elements) `,` type($dynamic_shape)";
+
   let hasCustomHLOConverter = 1;
 }
 

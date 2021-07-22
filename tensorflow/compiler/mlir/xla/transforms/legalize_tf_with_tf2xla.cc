@@ -385,7 +385,6 @@ bool IsOpAllowedTf2XlaPreferred(Operation* op) {
     TypeID::get<TF::XlaAllReduceOp>(),
     TypeID::get<TF::XlaGatherOp>(),
     TypeID::get<TF::XlaReplicaIdOp>(),
-    TypeID::get<TF::XlaShardingOp>(),
     TypeID::get<TF::Xlog1pyOp>(),
     TypeID::get<TF::ZerosLikeOp>(),
   };
@@ -738,6 +737,11 @@ class LegalizeTF : public PassWrapper<LegalizeTF, FunctionPass> {
 
   LegalizeTF(const LegalizeTF&) {}
 
+  StringRef getArgument() const final { return "xla-legalize-tf-with-tf2xla"; }
+  StringRef getDescription() const final {
+    return "Legalize from TensorFlow to the HLO dialect using tf2xla kernels";
+  }
+
   void runOnFunction() override {
     OwningRewritePatternList patterns(&getContext());
     patterns.insert<Tf2XlaRewritePattern>(
@@ -767,9 +771,7 @@ class LegalizeTF : public PassWrapper<LegalizeTF, FunctionPass> {
   };
 };
 
-static PassRegistration<LegalizeTF> pass(
-    "xla-legalize-tf-with-tf2xla",
-    "Legalize from TensorFlow to the HLO dialect using tf2xla kernels");
+static PassRegistration<LegalizeTF> pass;
 
 }  // end namespace
 

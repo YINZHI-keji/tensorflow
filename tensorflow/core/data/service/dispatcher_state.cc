@@ -15,15 +15,29 @@ limitations under the License.
 #include "tensorflow/core/data/service/dispatcher_state.h"
 
 #include <memory>
+#include <string>
+#include <vector>
 
+#include "absl/container/flat_hash_map.h"
+#include "absl/strings/string_view.h"
+#include "absl/types/optional.h"
+#include "tensorflow/core/data/service/data_service.h"
 #include "tensorflow/core/data/service/journal.h"
 #include "tensorflow/core/data/service/journal.pb.h"
 #include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/protobuf/data_service.pb.h"
+#include "tensorflow/core/protobuf/service_config.pb.h"
 
 namespace tensorflow {
 namespace data {
 
-DispatcherState::DispatcherState() {}
+DispatcherState::DispatcherState()
+    : worker_index_resolver_(std::vector<std::string>{}) {}
+
+DispatcherState::DispatcherState(
+    const experimental::DispatcherConfig& dispatcher_config)
+    : worker_index_resolver_(dispatcher_config.worker_addresses()) {}
 
 Status DispatcherState::Apply(const Update& update) {
   switch (update.update_type_case()) {
@@ -63,6 +77,9 @@ Status DispatcherState::Apply(const Update& update) {
     case Update::kFinishTask:
       FinishTask(update.finish_task());
       break;
+    case Update::kSetElementSpec:
+      SetElementSpec(update.set_element_spec());
+      break;
     case Update::UPDATE_TYPE_NOT_SET:
       return errors::Internal("Update type not set.");
   }
@@ -90,6 +107,7 @@ void DispatcherState::RegisterWorker(
       std::make_shared<Worker>(address, register_worker.transfer_address());
   tasks_by_worker_[address] =
       absl::flat_hash_map<int64, std::shared_ptr<Task>>();
+  worker_index_resolver_.AddWorker(address);
 }
 
 void DispatcherState::CreateJob(const CreateJobUpdate& create_job) {
@@ -104,14 +122,15 @@ void DispatcherState::CreateJob(const CreateJobUpdate& create_job) {
       CreateJobUpdate::kNumConsumers) {
     num_consumers = create_job.num_consumers();
   }
-  auto job = std::make_shared<Job>(job_id, create_job.dataset_id(),
-                                   ProcessingMode(create_job.processing_mode()),
-                                   named_job_key, num_consumers);
+  auto job = std::make_shared<Job>(
+      job_id, create_job.dataset_id(), create_job.processing_mode_def(),
+      create_job.num_split_providers(), named_job_key, num_consumers);
   DCHECK(!jobs_.contains(job_id));
   jobs_[job_id] = job;
   tasks_by_job_[job_id] = std::vector<std::shared_ptr<Task>>();
   if (named_job_key.has_value()) {
-    DCHECK(!named_jobs_.contains(named_job_key.value()));
+    DCHECK(!named_jobs_.contains(named_job_key.value()) ||
+           named_jobs_[named_job_key.value()]->garbage_collected);
     named_jobs_[named_job_key.value()] = job;
   }
   next_available_job_id_ = std::max(next_available_job_id_, job_id + 1);
@@ -121,13 +140,14 @@ void DispatcherState::ProduceSplit(const ProduceSplitUpdate& produce_split) {
   std::shared_ptr<Job> job = jobs_[produce_split.job_id()];
   DCHECK(job->distributed_epoch_state.has_value());
   DistributedEpochState& state = job->distributed_epoch_state.value();
-  DCHECK_EQ(produce_split.repetition(), state.repetition);
+  int64 provider_index = produce_split.split_provider_index();
+  DCHECK_EQ(produce_split.repetition(), state.repetitions[provider_index]);
   if (produce_split.finished()) {
-    state.repetition++;
-    state.split_provider_index = 0;
+    state.repetitions[provider_index]++;
+    state.indices[provider_index] = 0;
     return;
   }
-  state.split_provider_index++;
+  state.indices[provider_index]++;
 }
 
 void DispatcherState::AcquireJobClient(
@@ -247,6 +267,24 @@ void DispatcherState::FinishTask(const FinishTaskUpdate& finish_task) {
   }
   VLOG(3) << "Job " << task->job->job_id << " finished: " << all_finished;
   jobs_[task->job->job_id]->finished = all_finished;
+}
+
+void DispatcherState::SetElementSpec(
+    const SetElementSpecUpdate& set_element_spec) {
+  int64 dataset_id = set_element_spec.dataset_id();
+  std::string element_spec = set_element_spec.element_spec();
+  DCHECK(!id_element_spec_info_.contains(dataset_id));
+  id_element_spec_info_[dataset_id] = element_spec;
+}
+
+Status DispatcherState::GetElementSpec(int64 dataset_id,
+                                       std::string& element_spec) const {
+  auto it = id_element_spec_info_.find(dataset_id);
+  if (it == id_element_spec_info_.end()) {
+    return errors::NotFound("Element_spec with key ", dataset_id, " not found");
+  }
+  element_spec = it->second;
+  return Status::OK();
 }
 
 int64 DispatcherState::NextAvailableDatasetId() const {
@@ -384,6 +422,15 @@ Status DispatcherState::TasksForWorker(
 
 int64 DispatcherState::NextAvailableTaskId() const {
   return next_available_task_id_;
+}
+
+Status DispatcherState::ValidateWorker(absl::string_view worker_address) const {
+  return worker_index_resolver_.ValidateWorker(worker_address);
+}
+
+StatusOr<int64> DispatcherState::GetWorkerIndex(
+    absl::string_view worker_address) const {
+  return worker_index_resolver_.GetWorkerIndex(worker_address);
 }
 
 }  // namespace data

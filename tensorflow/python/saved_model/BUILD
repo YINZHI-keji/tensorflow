@@ -409,7 +409,7 @@ py_library(
         "//tensorflow/python:dtypes",
         "//tensorflow/python:errors",
         "//tensorflow/python:framework_ops",
-        "//tensorflow/python:gradients",
+        "//tensorflow/python:handle_data_util",
         "//tensorflow/python:lookup_ops",
         "//tensorflow/python:resource_variable_ops",
         "//tensorflow/python:tensor_util",
@@ -559,6 +559,7 @@ py_strict_library(
     deps = [
         ":nested_structure_coder",
         "//tensorflow/core:protos_all_py",
+        "//tensorflow/python:default_gradient",
         "//tensorflow/python:framework_ops",
         "//tensorflow/python:func_graph",
         "//tensorflow/python:function_def_to_graph",

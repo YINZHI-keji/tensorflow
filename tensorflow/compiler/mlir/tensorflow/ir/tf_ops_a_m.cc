@@ -1672,9 +1672,9 @@ static LogicalResult inferConvReturnTypes(
     for (auto i : llvm::seq<int>(0, num_spatial_dims)) {
       const int64_t dim = GetTensorSpatialDimIndex(num_dims, format, i);
       int64_t stride = get_int(strides[dim]);
-      tensorflow::int64 expected_output_size;
-      tensorflow::int64 pad_low;
-      tensorflow::int64 pad_high;
+      int64_t expected_output_size;
+      int64_t pad_low;
+      int64_t pad_high;
       // Retrieve padding, if defined explicitly.
       if (padding == tensorflow::Padding::EXPLICIT) {
         pad_low = get_int(explicit_padding[2 * dim]);
@@ -2222,6 +2222,24 @@ void ExpandDimsOp::build(OpBuilder &builder, OperationState &result,
 }
 
 //===----------------------------------------------------------------------===//
+// Expm1Op
+//===----------------------------------------------------------------------===//
+LogicalResult Expm1Op::inferReturnTypes(
+    MLIRContext *context, Optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  if (operands.empty()) {
+    return emitOptionalError(location, "requires at least one operand.");
+  }
+  auto input_ty = operands[0].getType().dyn_cast<TensorType>();
+  if (!input_ty) {
+    return emitOptionalError(location, "requires input to be of Tensor type");
+  }
+  inferredReturnTypes.assign({input_ty});
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // FakeQuantWithMinMaxArgsOp
 //===----------------------------------------------------------------------===//
 static LogicalResult Verify(FakeQuantWithMinMaxArgsOp op) {
@@ -2319,16 +2337,22 @@ static ShapedType InferFillOpType(Value dims, Value value) {
   Type etype = value.getType().cast<ShapedType>().getElementType();
 
   DenseIntElementsAttr dims_attr;
-  if (!matchPattern(dims, m_Constant(&dims_attr))) {
-    return UnrankedTensorType::get(etype);
+  if (matchPattern(dims, m_Constant(&dims_attr))) {
+    llvm::SmallVector<int64_t, 4> shape;
+    shape.reserve(dims_attr.getNumElements());
+    for (const APInt dim : dims_attr.getValues<APInt>()) {
+      shape.push_back(dim.getSExtValue());
+    }
+    return RankedTensorType::get(shape, etype);
   }
 
-  llvm::SmallVector<int64_t, 4> shape;
-  shape.reserve(dims_attr.getNumElements());
-  for (const APInt dim : dims_attr.getValues<APInt>()) {
-    shape.push_back(dim.getSExtValue());
+  if (auto shape_op = dims.getDefiningOp<ShapeOp>()) {
+    if (auto t = shape_op.input().getType().dyn_cast<ShapedType>()) {
+      return t;
+    }
   }
-  return RankedTensorType::get(shape, etype);
+
+  return UnrankedTensorType::get(etype);
 }
 
 void FillOp::build(OpBuilder &builder, OperationState &result, Value dims,

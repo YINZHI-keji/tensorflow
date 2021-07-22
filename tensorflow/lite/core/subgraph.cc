@@ -28,7 +28,6 @@ limitations under the License.
 #include <vector>
 
 #include "tensorflow/lite/allocation.h"
-#include "tensorflow/lite/arena_planner.h"
 #include "tensorflow/lite/builtin_ops.h"
 #include "tensorflow/lite/c/c_api_types.h"
 #include "tensorflow/lite/c/common.h"
@@ -43,6 +42,11 @@ limitations under the License.
 #include "tensorflow/lite/minimal_logging.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 #include "tensorflow/lite/util.h"
+#ifdef TFLITE_USE_SIMPLE_MEMORY_PLANNER
+#include "tensorflow/lite/simple_planner.h"
+#else
+#include "tensorflow/lite/arena_planner.h"
+#endif
 
 namespace tflite {
 
@@ -200,14 +204,16 @@ Subgraph::Subgraph(ErrorReporter* error_reporter,
                    TfLiteExternalContext** external_contexts,
                    std::vector<std::unique_ptr<Subgraph>>* subgraphs,
                    resource::ResourceMap* resources,
-                   resource::ResourceIDMap* resource_ids)
+                   resource::ResourceIDMap* resource_ids,
+                   resource::InitializationStatusMap* initialization_status_map)
     : external_contexts_(external_contexts),
       error_reporter_(error_reporter),
       next_execution_plan_index_to_prepare_(0),
       next_execution_plan_index_to_plan_allocation_(0),
       subgraphs_(subgraphs),
       resources_(resources),
-      resource_ids_(resource_ids) {
+      resource_ids_(resource_ids),
+      initialization_status_map_(initialization_status_map) {
   // TODO(b/161272052): Consider a better TfLiteContext initialization pattern:
   context_.impl_ = static_cast<void*>(this);
   context_.ResizeTensor = ResizeTensor;
@@ -962,9 +968,14 @@ TfLiteStatus Subgraph::PrepareOpsStartingAt(
 
 TfLiteStatus Subgraph::PrepareOpsAndTensors() {
   if (!memory_planner_) {
+#ifdef TFLITE_USE_SIMPLE_MEMORY_PLANNER
+    memory_planner_.reset(new SimplePlanner(
+        &context_, std::unique_ptr<GraphInfo>(new InterpreterInfo(this))));
+#else
     memory_planner_.reset(new ArenaPlanner(
         &context_, std::unique_ptr<GraphInfo>(new InterpreterInfo(this)),
         preserve_all_tensors_, kDefaultTensorAlignment));
+#endif
     memory_planner_->PlanAllocations();
   }
 

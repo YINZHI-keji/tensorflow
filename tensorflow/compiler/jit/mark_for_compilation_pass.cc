@@ -1717,7 +1717,7 @@ Status MarkForCompilation(
       .Run();
 }
 
-std::atomic<int64>* GetPointerToFuel(int64 initial_value) {
+std::atomic<int64>* GetPointerToFuel(int64_t initial_value) {
   static std::atomic<int64>* fuel = [&]() {
     std::atomic<int64>* fuel = new std::atomic<int64>;
     *fuel = initial_value;
@@ -1875,6 +1875,7 @@ absl::flat_hash_set<string> GetKnownXLAAllowlistOp() {
                                      "Dequantize",
                                      "Diag",
                                      "DynamicStitch",
+                                     "DynamicPartition",
                                      "Einsum",
                                      "EmptyTensorList",
                                      "EnsureShape",
@@ -2079,6 +2080,7 @@ absl::flat_hash_set<string> GetKnownXLAAllowlistOp() {
                                      "XlaRecv",
                                      "XlaReduce",
                                      "XlaReduceWindow",
+                                     "XlaRemoveDynamicDimensionSize",
                                      "XlaReplicaId",
                                      "XlaScatter",
                                      "XlaSelectAndScatter",
@@ -2092,6 +2094,7 @@ absl::flat_hash_set<string> GetKnownXLAAllowlistOp() {
                                      "XlaSpmdShardToFullShape",
                                      "XlaSvd",
                                      "XlaVariadicReduce",
+                                     "XlaVariadicReduceV2",
                                      "XlaVariadicSort",
                                      "XlaWhile",
                                      "Zeta",

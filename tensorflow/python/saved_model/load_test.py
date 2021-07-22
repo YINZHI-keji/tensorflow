@@ -1948,6 +1948,8 @@ class LoadTest(test.TestCase, parameterized.TestCase):
     self.assertEqual("/job:localhost", options.experimental_io_device)
 
   def test_load_custom_saveable_object(self, cycles):
+    if context.is_tfrt_enabled():
+      self.skipTest("Disable due to b/190539415.")
     root = tracking.AutoTrackable()
     root.table = lookup_ops.MutableHashTable(dtypes.string, dtypes.float32, -1)
     root.table.insert("foo", 15)
@@ -2042,6 +2044,41 @@ class LoadTest(test.TestCase, parameterized.TestCase):
 
     self.assertAllClose(grads, expected_grads)
     self.assertAllClose(grad_grads, expected_grad_grads)
+
+  def test_custom_gradients_with_none_grad(self, cycles):
+    # https://github.com/google/jax/issues/7123
+
+    @custom_gradient.custom_gradient
+    def f(params, state):
+      def grad_fn(*args):
+        return args
+      return (params, state), grad_fn
+    @def_function.function(input_signature=[
+        tensor_spec.TensorSpec([], dtypes.float32),
+        tensor_spec.TensorSpec([], dtypes.int32)])
+    def predict(params, state):
+      return f(params, state)
+
+    params = variables.Variable(1.0)
+    # None grads only appear when state is an int.
+    state = constant_op.constant(3, dtype=dtypes.int32)
+    with backprop.GradientTape() as tape:
+      tape.watch(params)
+      y = predict(params, state)
+      expected_grads = tape.gradient(y, params)
+
+    root = tracking.AutoTrackable()
+    root.fn = predict
+    loaded = cycle(
+        root, cycles, options=save_options.SaveOptions(
+            experimental_custom_gradients=True))
+
+    with backprop.GradientTape() as tape:
+      tape.watch(params)
+      y = loaded.fn(params, state)
+      grads = tape.gradient(y, params)
+
+    self.assertAllClose(grads, expected_grads)
 
 
 class SingleCycleTests(test.TestCase, parameterized.TestCase):

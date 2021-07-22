@@ -286,6 +286,23 @@ GENERATE_DEFAULT_TEST_WITH_SPECIFIC_INPUT_VALUES_2(
     test::InputAsVector<Eigen::half>(kDigammaValues), baseline_digamma,
     test::OpsTestConfig())
 
+/// Test `tf.Elu`.
+
+template <typename T>
+T baseline_elu(T x) {
+  if (x < 0) return std::exp(x) - 1;
+  return x;
+}
+
+GENERATE_DEFAULT_TEST(Elu, DT_FLOAT, DT_FLOAT, baseline_elu,
+                      test::OpsTestConfig())
+
+GENERATE_DEFAULT_TEST(Elu, DT_DOUBLE, DT_DOUBLE, baseline_elu,
+                      test::OpsTestConfig())
+
+GENERATE_DEFAULT_TEST_2(Elu, DT_HALF, DT_FLOAT, DT_HALF, DT_FLOAT, baseline_elu,
+                        test::OpsTestConfig())
+
 /// Test `tf.Erf` and `tf.Erfc`.
 
 // Use specific values to cover the different intervals in the f64 erf and f64
@@ -437,6 +454,12 @@ GENERATE_DEFAULT_TEST(Exp, DT_DOUBLE, DT_DOUBLE, std::exp,
 GENERATE_DEFAULT_TEST_2(Exp, DT_HALF, DT_FLOAT, DT_HALF, DT_FLOAT, std::exp,
                         test::OpsTestConfig())
 
+GENERATE_DEFAULT_TEST(Exp, DT_COMPLEX64, DT_COMPLEX64, std::exp,
+                      test::OpsTestConfig())
+
+GENERATE_DEFAULT_TEST(Exp, DT_COMPLEX128, DT_COMPLEX128, std::exp,
+                      test::OpsTestConfig())
+
 /// Test `tf.Expm1`.
 
 GENERATE_DEFAULT_TEST(Expm1, DT_FLOAT, DT_FLOAT, std::expm1,
@@ -509,13 +532,25 @@ T baseline_invert(T x) {
 GENERATE_DEFAULT_TEST(Invert, DT_INT8, DT_INT8, baseline_invert,
                       test::OpsTestConfig().ExpectStrictlyEqual())
 
+GENERATE_DEFAULT_TEST(Invert, DT_UINT8, DT_UINT8, baseline_invert,
+                      test::OpsTestConfig().ExpectStrictlyEqual())
+
 GENERATE_DEFAULT_TEST(Invert, DT_INT16, DT_INT16, baseline_invert,
+                      test::OpsTestConfig().ExpectStrictlyEqual())
+
+GENERATE_DEFAULT_TEST(Invert, DT_UINT16, DT_UINT16, baseline_invert,
                       test::OpsTestConfig().ExpectStrictlyEqual())
 
 GENERATE_DEFAULT_TEST(Invert, DT_INT32, DT_INT32, baseline_invert,
                       test::OpsTestConfig().ExpectStrictlyEqual())
 
+GENERATE_DEFAULT_TEST(Invert, DT_UINT32, DT_UINT32, baseline_invert,
+                      test::OpsTestConfig().ExpectStrictlyEqual())
+
 GENERATE_DEFAULT_TEST(Invert, DT_INT64, DT_INT64, baseline_invert,
+                      test::OpsTestConfig().ExpectStrictlyEqual())
+
+GENERATE_DEFAULT_TEST(Invert, DT_UINT64, DT_UINT64, baseline_invert,
                       test::OpsTestConfig().ExpectStrictlyEqual())
 
 /// Test `tf.IsFinite`.
@@ -675,6 +710,30 @@ GENERATE_DEFAULT_TEST(Neg, DT_INT16, DT_INT16, baseline_neg,
 GENERATE_DEFAULT_TEST(Neg, DT_INT64, DT_INT64, baseline_neg,
                       test::OpsTestConfig().ExpectStrictlyEqual())
 
+GENERATE_DEFAULT_TEST(Neg, DT_COMPLEX64, DT_COMPLEX64, baseline_neg,
+                      test::OpsTestConfig().ExpectStrictlyEqual())
+
+GENERATE_DEFAULT_TEST(Neg, DT_COMPLEX128, DT_COMPLEX128, baseline_neg,
+                      test::OpsTestConfig().ExpectStrictlyEqual())
+
+/// Test `tf.OnesLike`.
+
+template <typename T>
+T baseline_ones_like(T /*inp*/) {
+  return T(1);
+}
+
+GENERATE_DEFAULT_TEST(OnesLike, DT_BOOL, DT_BOOL, baseline_ones_like,
+                      test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TEST(OnesLike, DT_HALF, DT_HALF, baseline_ones_like,
+                      test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TEST(OnesLike, DT_FLOAT, DT_FLOAT, baseline_ones_like,
+                      test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TEST(OnesLike, DT_DOUBLE, DT_DOUBLE, baseline_ones_like,
+                      test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TEST(OnesLike, DT_INT64, DT_INT64, baseline_ones_like,
+                      test::OpsTestConfig().ExpectStrictlyEqual())
+
 /// Test `tf.Real`.
 
 template <typename T>
@@ -730,6 +789,47 @@ GENERATE_DEFAULT_TEST(Relu, DT_DOUBLE, DT_DOUBLE, baseline_relu,
 GENERATE_DEFAULT_TEST_2(Relu, DT_HALF, DT_FLOAT, DT_HALF, DT_FLOAT,
                         baseline_relu, test::OpsTestConfig())
 
+/// Test `tf.Rint`.
+
+GENERATE_DEFAULT_TEST(Rint, DT_FLOAT, DT_FLOAT, std::rint,
+                      test::OpsTestConfig().ExpectStrictlyEqual())
+
+GENERATE_DEFAULT_TEST_WITH_SPECIFIC_INPUT_VALUES(
+    Rint, DT_DOUBLE, DT_DOUBLE,
+    test::InputAsVector<double>({-1.7, -1.5, -0.2, -0.0, 0.0, 0.2, 0.5000001,
+                                 1.5, 1.7, 2.0}),
+    std::rint, test::OpsTestConfig().ExpectStrictlyEqual())
+
+/// Test `tf.Round`.
+
+/// `tf.Round` is the same as `std::rint` and different from `std::round`. It
+/// rounds to the nearest even integer, not towards zero.
+
+template <typename T>
+T baseline_round(T x) {
+  T y = std::rint(x);
+  return y == T(0) ? T(0) : y;
+}
+
+GENERATE_DEFAULT_TEST_WITH_SPECIFIC_INPUT_VALUES(
+    Round, DT_DOUBLE, DT_DOUBLE,
+    test::InputAsVector<double>({-1.7, -1.5, -0.2, -0.0, 0.0, 0.2, 0.5000001,
+                                 1.5, 1.7, 2.0}),
+    baseline_round, test::OpsTestConfig().ExpectStrictlyEqual())
+
+GENERATE_DEFAULT_TEST(Round, DT_FLOAT, DT_FLOAT, baseline_round,
+                      test::OpsTestConfig().ExpectStrictlyEqual())
+
+GENERATE_DEFAULT_TEST_2(Round, DT_HALF, DT_FLOAT, DT_HALF, DT_FLOAT,
+                        baseline_round,
+                        test::OpsTestConfig().ExpectStrictlyEqual())
+
+GENERATE_DEFAULT_TEST(Round, DT_INT32, DT_INT32, baseline_round,
+                      test::OpsTestConfig().ExpectStrictlyEqual())
+
+GENERATE_DEFAULT_TEST(Round, DT_INT64, DT_INT64, baseline_round,
+                      test::OpsTestConfig().ExpectStrictlyEqual())
+
 /// Test `tf.Rsqrt`.
 
 /// Reference implementation.
@@ -747,15 +847,44 @@ GENERATE_DEFAULT_TEST(Rsqrt, DT_DOUBLE, DT_DOUBLE, baseline_rsqrt,
 GENERATE_DEFAULT_TEST_2(Rsqrt, DT_HALF, DT_FLOAT, DT_HALF, DT_FLOAT,
                         baseline_rsqrt, test::OpsTestConfig())
 
+/// Test `tf.Selu`.
+
+template <typename T>
+T baseline_selu(T x) {
+  const double scale = 1.0507009873554804934193349852946;
+  if (x > 0) return scale * x;
+
+  const double scaled_alpha = 1.7580993408473768599402175208123;
+  return scaled_alpha * (std::exp(x) - 1);
+}
+
+GENERATE_DEFAULT_TEST(Selu, DT_FLOAT, DT_FLOAT, baseline_selu,
+                      test::OpsTestConfig())
+
+GENERATE_DEFAULT_TEST(Selu, DT_DOUBLE, DT_DOUBLE, baseline_selu,
+                      test::OpsTestConfig())
+
+GENERATE_DEFAULT_TEST_2(Selu, DT_HALF, DT_FLOAT, DT_HALF, DT_FLOAT,
+                        baseline_selu, test::OpsTestConfig())
+
 /// Test `tf.Sign`.
 
 // Reference implementation
 template <typename T>
 T baseline_sign(T x) {
-  if (isnan(x)) return x;
+  if (std::isnan(x)) return x;
   if (x == 0) return 0;
   if (x < 0) return -1;
   return 1;
+}
+
+template <>
+std::complex<double> baseline_sign(std::complex<double> x) {
+  double abs_x = std::abs(x);
+  if (abs_x == 0) return std::complex<double>(0);
+  double abs_x_inverse = 1 / abs_x;
+  return std::complex<double>(x.real() * abs_x_inverse,
+                              x.imag() * abs_x_inverse);
 }
 
 GENERATE_DEFAULT_TEST(Sign, DT_FLOAT, DT_FLOAT, baseline_sign,
@@ -770,6 +899,13 @@ GENERATE_DEFAULT_TEST_2(Sign, DT_HALF, DT_FLOAT, DT_HALF, DT_FLOAT,
                         baseline_sign, test::OpsTestConfig())
 
 GENERATE_DEFAULT_TEST(Sign, DT_INT64, DT_INT64, baseline_sign,
+                      test::OpsTestConfig().ExpectStrictlyEqual())
+
+GENERATE_DEFAULT_TEST_2(Sign, DT_COMPLEX64, DT_COMPLEX128, DT_COMPLEX64,
+                        DT_COMPLEX128, baseline_sign,
+                        test::OpsTestConfig().ExpectStrictlyEqual())
+
+GENERATE_DEFAULT_TEST(Sign, DT_COMPLEX128, DT_COMPLEX128, baseline_sign,
                       test::OpsTestConfig().ExpectStrictlyEqual())
 
 /// Test `tf.Sin`.
@@ -791,6 +927,45 @@ GENERATE_DEFAULT_TEST(Sinh, DT_FLOAT, DT_FLOAT, std::sinh,
                       test::OpsTestConfig())
 
 GENERATE_DEFAULT_TEST(Sinh, DT_DOUBLE, DT_DOUBLE, std::sinh,
+                      test::OpsTestConfig())
+
+/// Test `tf.Softplus`.
+
+// Reference implementation
+template <typename T>
+T baseline_softplus(T x) {
+  T epsilon = std::numeric_limits<T>::epsilon();
+  T threshold = 2 + std::log(epsilon);
+  if (x > -threshold && x < threshold) {
+    return std::exp(x);
+  }
+  return std::log1p(std::exp(x));
+}
+
+GENERATE_DEFAULT_TEST_2(Softplus, DT_HALF, DT_FLOAT, DT_HALF, DT_FLOAT,
+                        baseline_softplus, test::OpsTestConfig())
+
+GENERATE_DEFAULT_TEST(Softplus, DT_FLOAT, DT_FLOAT, baseline_softplus,
+                      test::OpsTestConfig())
+
+GENERATE_DEFAULT_TEST(Softplus, DT_DOUBLE, DT_DOUBLE, baseline_softplus,
+                      test::OpsTestConfig())
+
+/// Test `tf.Softsign`.
+
+// Reference implementation
+template <typename T>
+T baseline_softsign(T x) {
+  return x / (std::abs(x) + 1);
+}
+
+GENERATE_DEFAULT_TEST_2(Softsign, DT_HALF, DT_FLOAT, DT_HALF, DT_FLOAT,
+                        baseline_softsign, test::OpsTestConfig())
+
+GENERATE_DEFAULT_TEST(Softsign, DT_FLOAT, DT_FLOAT, baseline_softsign,
+                      test::OpsTestConfig())
+
+GENERATE_DEFAULT_TEST(Softsign, DT_DOUBLE, DT_DOUBLE, baseline_softsign,
                       test::OpsTestConfig())
 
 /// Test `tf.Sqrt`.
@@ -861,6 +1036,24 @@ GENERATE_DEFAULT_TEST(Square, DT_FLOAT, DT_FLOAT, baseline_square,
 GENERATE_DEFAULT_TEST(Square, DT_DOUBLE, DT_DOUBLE, baseline_square,
                       test::OpsTestConfig())
 GENERATE_DEFAULT_TEST(Square, DT_INT64, DT_INT64, baseline_square,
+                      test::OpsTestConfig().ExpectStrictlyEqual())
+
+/// Test `tf.ZerosLike`.
+
+template <typename T>
+T baseline_zeros_like(T /*inp*/) {
+  return T(0);
+}
+
+GENERATE_DEFAULT_TEST(ZerosLike, DT_BOOL, DT_BOOL, baseline_zeros_like,
+                      test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TEST(ZerosLike, DT_HALF, DT_HALF, baseline_zeros_like,
+                      test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TEST(ZerosLike, DT_FLOAT, DT_FLOAT, baseline_zeros_like,
+                      test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TEST(ZerosLike, DT_DOUBLE, DT_DOUBLE, baseline_zeros_like,
+                      test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TEST(ZerosLike, DT_INT64, DT_INT64, baseline_zeros_like,
                       test::OpsTestConfig().ExpectStrictlyEqual())
 
 }  // namespace

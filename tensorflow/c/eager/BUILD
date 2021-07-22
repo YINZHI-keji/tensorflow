@@ -682,6 +682,7 @@ tf_cuda_cc_test(
         "//tensorflow/core/common_runtime/eager:eager_operation",
         "//tensorflow/core/common_runtime/eager:tensor_handle",
         # copybara:uncomment_begin
+        # "//tensorflow/core/tfrt/eager:c_api_tfrt",
         # "@tf_runtime//backends/cpu:tf_ops_alwayslink",
         # copybara:uncomment_end
     ],
@@ -831,16 +832,13 @@ tf_cuda_cc_test(
         ":c_api_experimental",
         ":c_api_internal",
         ":c_api_test_util",
-        ":tfe_context_internal",
         ":tfe_tensorhandle_internal",
         "//tensorflow/c:c_api_experimental",
         "//tensorflow/c:c_test_util",
-        "//tensorflow/core:framework",
         "//tensorflow/core:lib",
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
-        "//tensorflow/core/common_runtime/eager:context",
         "//tensorflow/core/platform:env",
     ],
 )
@@ -925,6 +923,7 @@ tf_cuda_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/container:flat_hash_map",
         "//tensorflow/c:tf_status_helper",
+        "//tensorflow/core/distributed_runtime/coordination:coordination_service",
         "//tensorflow/core/distributed_runtime/eager:eager_client",
         "//tensorflow/core/distributed_runtime/rpc/eager:grpc_eager_client",
         "//tensorflow/core/distributed_runtime/rpc:grpc_channel",

@@ -60,7 +60,7 @@ limitations under the License.
 #include "mlir/Translation.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/lite/flatbuffer_operator.h"
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
-#include "tensorflow/compiler/mlir/lite/metrics/error_collector.h"
+#include "tensorflow/compiler/mlir/lite/metrics/error_collector_inst.h"
 #include "tensorflow/compiler/mlir/lite/utils/convert_type.h"
 #include "tensorflow/compiler/mlir/lite/utils/stateful_ops_utils.h"
 #include "tensorflow/compiler/mlir/op_or_arg_name_mapper.h"
@@ -470,6 +470,8 @@ struct SignatureDefData {
   std::string method_name;
   // SignatureDef key.
   std::string signature_def_key;
+  // Subgraph index.
+  uint32_t subgraph_index;
 };
 
 // Translates an MLIR module in TFLite dialect to TFLite FlatBuffer.
@@ -480,7 +482,7 @@ class Translator {
   // internal error.
   static Optional<std::string> Translate(
       ModuleOp module, bool emit_builtin_tflite_ops, bool emit_select_tf_ops,
-      bool emit_custom_ops,
+      bool emit_custom_ops, bool allow_all_select_tf_ops,
       const std::unordered_set<std::string>& select_user_tf_ops,
       const std::unordered_set<std::string>& tags,
       OpOrArgNameMapper* op_or_arg_name_mapper,
@@ -490,6 +492,7 @@ class Translator {
   enum class OpType : char { kTfliteBuiltin, kSelectTf, kCustomOp };
   explicit Translator(ModuleOp module, bool emit_builtin_tflite_ops,
                       bool emit_select_tf_ops, bool emit_custom_ops,
+                      bool allow_all_select_tf_ops,
                       const std::unordered_set<std::string>& select_user_tf_ops,
                       const std::unordered_set<std::string>& saved_model_tags,
                       OpOrArgNameMapper* op_or_arg_name_mapper,
@@ -498,6 +501,7 @@ class Translator {
         name_mapper_(*op_or_arg_name_mapper),
         builder_(kInitialBufferSize),
         saved_model_tags_(saved_model_tags),
+        allow_all_select_tf_ops_(allow_all_select_tf_ops),
         select_user_tf_ops_(select_user_tf_ops),
         metadata_(metadata) {
     // The first buffer must be empty according to the schema definition.
@@ -560,18 +564,6 @@ class Translator {
       mlir::TFL::NumericVerifyOp op, const std::vector<int32_t>& operands,
       const std::vector<int32_t>& results);
 
-  // Builds Assign/Read Variable ops.
-  template <typename T>
-  BufferOffset<tflite::Operator> BuildVariableOperator(
-      T op, const std::string& op_name, const std::vector<int32_t>& operands,
-      const std::vector<int32_t>& results);
-
-  // Builds VarHandle op.
-  BufferOffset<tflite::Operator> BuildVarHandleOp(
-      mlir::TFL::VarHandleOp op, const std::string& op_name,
-      const std::vector<int32_t>& operands,
-      const std::vector<int32_t>& results);
-
   BufferOffset<tflite::Operator> BuildCustomOperator(
       Operation* inst, mlir::TFL::CustomOp op,
       const std::vector<int32_t>& operands,
@@ -606,7 +598,7 @@ class Translator {
   // Build a subgraph with a given name out of the region either corresponding
   // to a function's body or while op.
   Optional<BufferOffset<tflite::SubGraph>> BuildSubGraph(
-      const std::string& name, Region* region);
+      const std::string& name, Region* region, const int index);
 
   // Builds Metadata with the given `name` and buffer `content`.
   BufferOffset<tflite::Metadata> BuildMetadata(StringRef name,
@@ -624,8 +616,9 @@ class Translator {
   // Returns list of offsets for the passed 'items' in TensorMap structure
   // inside the flatbuffer.
   // 'items' is a map from tensor name in signatureDef to tensor name in
-  // the model.
+  // the subgraph, specified by the 'subgraph_index' argument.
   std::vector<BufferOffset<tflite::TensorMap>> GetList(
+      const int subgraph_index,
       const std::map<std::string, std::string>& items);
 
   // Uses the tf.entry_function attribute (if set) to initialize the op to name
@@ -652,8 +645,9 @@ class Translator {
   BufferOffset<tflite::Buffer> empty_buffer_;
 
   std::vector<BufferOffset<tflite::Buffer>> buffers_;
-  // Maps tensor name in the graph to the tensor index.
-  absl::flat_hash_map<std::string, int> tensor_index_map_;
+  // Maps subgraph index and tensor name in the graph to the tensor index.
+  absl::flat_hash_map<int, absl::flat_hash_map<std::string, int>>
+      tensor_index_map_;
 
   // Maps op name to index of the corresponding OperatorCode in opcodes_ vector.
   absl::flat_hash_map<std::string, uint32_t> opcode_index_map_;
@@ -682,6 +676,8 @@ class Translator {
 
   // Set of saved model tags, if any.
   const std::unordered_set<std::string> saved_model_tags_;
+  // Allows automatic pass through of TF ops as select Tensorflow ops.
+  const bool allow_all_select_tf_ops_;
   // User's defined ops allowed with Flex.
   const std::unordered_set<std::string> select_user_tf_ops_;
   // Map of key value pairs of metadata to export.
@@ -986,36 +982,6 @@ BufferOffset<tflite::Operator> Translator::BuildNumericVerifyOperator(
       tflite::CustomOptionsFormat_FLEXBUFFERS);
 }
 
-BufferOffset<tflite::Operator> Translator::BuildVarHandleOp(
-    mlir::TFL::VarHandleOp op, const std::string& op_name,
-    const std::vector<int32_t>& operands, const std::vector<int32_t>& results) {
-  auto opcode_index = GetOpcodeIndex(op_name, tflite::BuiltinOperator_CUSTOM);
-  auto fbb = absl::make_unique<flexbuffers::Builder>();
-  fbb->Map([&]() {
-    fbb->String("shared_name", op.shared_name().str());
-    fbb->String("container", op.container().str());
-  });
-  fbb->Finish();
-  auto f = std::unique_ptr<flexbuffers::Builder>(fbb.release());
-  auto custom_option = f->GetBuffer();
-  return tflite::CreateOperator(
-      builder_, opcode_index, builder_.CreateVector(operands),
-      builder_.CreateVector(results), tflite::BuiltinOptions_NONE,
-      /*builtin_options=*/0, builder_.CreateVector<uint8_t>(custom_option),
-      tflite::CustomOptionsFormat_FLEXBUFFERS);
-}
-
-// Builds Assign/Read Variable ops.
-template <typename T>
-BufferOffset<tflite::Operator> Translator::BuildVariableOperator(
-    T op, const std::string& op_name, const std::vector<int32_t>& operands,
-    const std::vector<int32_t>& results) {
-  auto opcode_index = GetOpcodeIndex(op_name, tflite::BuiltinOperator_CUSTOM);
-  return tflite::CreateOperator(
-      builder_, opcode_index, builder_.CreateVector(operands),
-      builder_.CreateVector(results), tflite::BuiltinOptions_NONE);
-}
-
 BufferOffset<tflite::Operator> Translator::BuildCustomOperator(
     Operation* inst, mlir::TFL::CustomOp op,
     const std::vector<int32_t>& operands, const std::vector<int32_t>& results) {
@@ -1157,21 +1123,6 @@ Optional<BufferOffset<tflite::Operator>> Translator::BuildOperator(
     return llvm::None;
   }
 
-  // TODO(b/149099381): Remove this once the kernels are promoted as
-  // builtin TFLite kernels.
-  // We export the VarHandle, Assign, and Read variable ops as custom ops.
-  if (auto read_op = llvm::dyn_cast<mlir::TFL::ReadVariableOp>(inst)) {
-    return BuildVariableOperator<mlir::TFL::ReadVariableOp>(
-        read_op, "ReadVariable", operands, results);
-  } else if (auto assign_op =
-                 llvm::dyn_cast<mlir::TFL::AssignVariableOp>(inst)) {
-    return BuildVariableOperator<mlir::TFL::AssignVariableOp>(
-        assign_op, "AssignVariable", operands, results);
-  } else if (auto var_handle_op =
-                 llvm::dyn_cast<mlir::TFL::VarHandleOp>(inst)) {
-    return BuildVarHandleOp(var_handle_op, "VarHandle", operands, results);
-  }
-
   // If TFLite built in op, create operator as a builtin op.
   if (dialect == tfl_dialect_) {
     // Only if built-in TFLite op emission is enabled, would legalization have
@@ -1262,7 +1213,8 @@ Optional<BufferOffset<tflite::Operator>> Translator::BuildOperator(
 
     const bool is_allowed_flex_op =
         IsAllowlistedFlexOp(node_def->op()) ||
-        ((select_user_tf_ops_.count(node_def->op()) != 0) &&
+        (((select_user_tf_ops_.count(node_def->op()) != 0) ||
+          allow_all_select_tf_ops_) &&
          (tensorflow::OpRegistry::Global()->LookUp(node_def->op()) != nullptr));
     // Flex op case
     // Eventually, the allowlist will go away and we will rely on some TF op
@@ -1401,7 +1353,7 @@ Translator::GetQuantizationForQuantStatsOpOutput(
 }
 
 Optional<BufferOffset<tflite::SubGraph>> Translator::BuildSubGraph(
-    const std::string& name, Region* region) {
+    const std::string& name, Region* region, const int index) {
   bool has_input_attr = false;
   if (auto fn = dyn_cast<FuncOp>(region->getParentOp())) {
     InitializeNamesFromAttribute(fn, &has_input_attr);
@@ -1411,14 +1363,15 @@ Optional<BufferOffset<tflite::SubGraph>> Translator::BuildSubGraph(
 
   // Builds tensor and buffer for argument or operation result. Returns false
   // on failure.
-  auto build_tensor_and_buffer = [&](Value value, const std::string& name) {
+  auto build_tensor_and_buffer = [&](Value value, const int subgraph_index,
+                                     const std::string& tensor_name) {
     // NoneType represents optional and may be skipped here.
     if (value.getType().isa<NoneType>()) {
       return true;
     }
 
     tensor_index_map.insert({value, tensors.size()});
-    tensor_index_map_[name] = tensors.size();
+    tensor_index_map_[subgraph_index][tensor_name] = tensors.size();
     Optional<BufferOffset<tflite::QuantizationParameters>> quant_parameters;
     if (value.hasOneUse()) {
       auto stats_op =
@@ -1428,7 +1381,7 @@ Optional<BufferOffset<tflite::SubGraph>> Translator::BuildSubGraph(
       }
     }
     auto tensor_or =
-        BuildTensor(value, name, buffers_.size(), quant_parameters);
+        BuildTensor(value, tensor_name, buffers_.size(), quant_parameters);
     if (!tensor_or) return false;
     tensors.push_back(*tensor_or);
 
@@ -1454,10 +1407,11 @@ Optional<BufferOffset<tflite::SubGraph>> Translator::BuildSubGraph(
   // other functions.
   for (unsigned i = 0, e = bb.getNumArguments(); i < e; ++i) {
     mlir::BlockArgument arg = bb.getArgument(i);
-    std::string name;
-    if (has_input_attr) name = std::string(name_mapper_.GetUniqueName(arg));
-    if (name.empty()) name = absl::StrCat("arg", i);
-    if (!build_tensor_and_buffer(arg, name)) return llvm::None;
+    std::string tensor_name;
+    if (has_input_attr)
+      tensor_name = std::string(name_mapper_.GetUniqueName(arg));
+    if (tensor_name.empty()) tensor_name = absl::StrCat("arg", i);
+    if (!build_tensor_and_buffer(arg, index, tensor_name)) return llvm::None;
   }
 
   bool failed_once = false;
@@ -1494,7 +1448,7 @@ Optional<BufferOffset<tflite::SubGraph>> Translator::BuildSubGraph(
     }
 
     for (auto val : inst.getResults()) {
-      std::string name = UniqueName(val);
+      std::string tensor_name = UniqueName(val);
       // For "tfl.numeric_verify" op, the name is used to find out the original
       // activation tensor rather than its own unique name in the visualization
       // or debugging tools.
@@ -1503,10 +1457,10 @@ Optional<BufferOffset<tflite::SubGraph>> Translator::BuildSubGraph(
         // The first operand is the quantized activation, the target of this
         // NumericVerify op.
         auto quantized_op_val = inst.getOperands().front();
-        name = "NumericVerify/" + UniqueName(quantized_op_val) + ":" +
-               std::to_string(tensor_index_map[quantized_op_val]);
+        tensor_name = "NumericVerify/" + UniqueName(quantized_op_val) + ":" +
+                      std::to_string(tensor_index_map[quantized_op_val]);
       }
-      if (!build_tensor_and_buffer(val, name)) return llvm::None;
+      if (!build_tensor_and_buffer(val, index, tensor_name)) return llvm::None;
     }
 
     // Skip constant ops as they don't represent a TFLite operator.
@@ -1651,7 +1605,7 @@ std::vector<std::string> GetStringsFromDictionaryAttr(
 
 std::vector<SignatureDefData> BuildSignaturedef(
     FuncOp main_op, const std::string& saved_model_tag,
-    tensorflow::OpOrArgNameMapper& name_mapper) {
+    const uint32_t subgraph_index, tensorflow::OpOrArgNameMapper& name_mapper) {
   static const char kSignatureDefIndexPath[] = "tf_saved_model.index_path";
   static const char kEntryFunctionAttributes[] = "tf.entry_function";
 
@@ -1724,17 +1678,19 @@ std::vector<SignatureDefData> BuildSignaturedef(
   if (auto name_attr = exported_name[0].dyn_cast_or_null<StringAttr>())
     result[0].method_name = name_attr.getValue().str();
   result[0].signature_def_key = saved_model_tag;
+  result[0].subgraph_index = subgraph_index;
   return result;
 }
 
 std::vector<BufferOffset<tflite::TensorMap>> Translator::GetList(
-    const std::map<std::string, std::string>& items) {
+    const int subgraph_index, const std::map<std::string, std::string>& items) {
   std::vector<BufferOffset<tflite::TensorMap>> result;
   for (const auto& item : items) {
     auto name_buf = builder_.CreateString(item.first);
     tflite::TensorMapBuilder tensor_map_builder(builder_);
     tensor_map_builder.add_name(name_buf);
-    tensor_map_builder.add_tensor_index(tensor_index_map_[item.second]);
+    tensor_map_builder.add_tensor_index(
+        tensor_index_map_[subgraph_index][item.second]);
     result.push_back(tensor_map_builder.Finish());
   }
   return result;
@@ -1744,9 +1700,14 @@ Optional<VectorBufferOffset<BufferOffset<tflite::SignatureDef>>>
 Translator::CreateSignatureDefs(
     const std::vector<SignatureDefData>& signature_defs) {
   std::vector<BufferOffset<tflite::SignatureDef>> signature_defs_buffer;
+  // When we export each function in the module op, intentionally, we export the
+  // entry functions at the beginning of the subgraph list and the
+  // subgraph_index is the index in entry functions and at the same, is the
+  // index in the subgraph list.
+  int subgraph_index = 0;
   for (const auto& signature_def_data : signature_defs) {
-    auto inputs = GetList(signature_def_data.inputs);
-    auto outputs = GetList(signature_def_data.outputs);
+    auto inputs = GetList(subgraph_index, signature_def_data.inputs);
+    auto outputs = GetList(subgraph_index, signature_def_data.outputs);
     auto inputs_buf = builder_.CreateVector(inputs);
     auto outputs_buf = builder_.CreateVector(outputs);
     auto method_name_buf =
@@ -1758,7 +1719,9 @@ Translator::CreateSignatureDefs(
     sig_def_builder.add_outputs(outputs_buf);
     sig_def_builder.add_method_name(method_name_buf);
     sig_def_builder.add_key(signature_def_key_buf);
+    sig_def_builder.add_subgraph_index(signature_def_data.subgraph_index);
     signature_defs_buffer.push_back(sig_def_builder.Finish());
+    ++subgraph_index;
   }
 
   return builder_.CreateVector(signature_defs_buffer);
@@ -1791,7 +1754,7 @@ bool UpdateEntryFunction(ModuleOp module) {
 
 Optional<std::string> Translator::Translate(
     ModuleOp module, bool emit_builtin_tflite_ops, bool emit_select_tf_ops,
-    bool emit_custom_ops,
+    bool emit_custom_ops, bool allow_all_select_tf_ops,
     const std::unordered_set<std::string>& select_user_tf_ops,
     const std::unordered_set<std::string>& tags,
     OpOrArgNameMapper* op_or_arg_name_mapper,
@@ -1802,8 +1765,9 @@ Optional<std::string> Translator::Translate(
   if (!UpdateEntryFunction(module)) return llvm::None;
   if (!IsValidTFLiteMlirModule(module)) return llvm::None;
   Translator translator(module, emit_builtin_tflite_ops, emit_select_tf_ops,
-                        emit_custom_ops, select_user_tf_ops, tags,
-                        op_or_arg_name_mapper, metadata);
+                        emit_custom_ops, allow_all_select_tf_ops,
+                        select_user_tf_ops, tags, op_or_arg_name_mapper,
+                        metadata);
   return translator.TranslateInternal();
 }
 
@@ -1859,8 +1823,15 @@ Optional<std::string> Translator::TranslateInternal() {
   std::vector<BufferOffset<tflite::SubGraph>> subgraphs;
   subgraphs.reserve(named_regions.size());
   int first_failed_func = -1;
+
+  // When we export each function in the module op, intentionally, we export the
+  // entry functions at the beginning of the subgraph list and the
+  // subgraph_index is the index in entry functions and at the same, is the
+  // index in the subgraph list.
+  int subgraph_index = 0;
   for (auto it : llvm::enumerate(named_regions)) {
-    auto subgraph_or = BuildSubGraph(it.value().first, it.value().second);
+    auto subgraph_or =
+        BuildSubGraph(it.value().first, it.value().second, subgraph_index);
     if (!subgraph_or) {
       if (first_failed_func == -1)
         // Record the index of the first region that cannot be converted.
@@ -1869,6 +1840,7 @@ Optional<std::string> Translator::TranslateInternal() {
         first_failed_func = it.index();
     } else {
       subgraphs.push_back(*subgraph_or);
+      ++subgraph_index;
     }
   }
 
@@ -1965,14 +1937,20 @@ Optional<std::string> Translator::TranslateInternal() {
   if (!metadata) return llvm::None;
 
   std::vector<SignatureDefData> signature_defs_vec;
+  subgraph_index = 0;
   // Build SignatureDefs for the tf.entry_function based func ops.
   for (auto fn : entry_functions) {
     auto signature_defs = BuildSignaturedef(
         fn, saved_model_tags_.empty() ? "" : *saved_model_tags_.begin(),
-        name_mapper_);
+        subgraph_index, name_mapper_);
     for (const auto& signature_def : signature_defs) {
       signature_defs_vec.push_back(signature_def);
     }
+    // When we export each function in the module op, intentionally, we export
+    // the entry functions at the beginning of the subgraph list and the
+    // subgraph_index is the index in entry functions and at the same, is the
+    // index in the subgraph list.
+    ++subgraph_index;
   }
   auto signature_defs = CreateSignatureDefs(signature_defs_vec);
 
@@ -2103,9 +2081,9 @@ bool MlirToFlatBufferTranslateFunction(mlir::ModuleOp module,
                                        std::string* serialized_flatbuffer) {
   auto maybe_translated = Translator::Translate(
       module, options.emit_builtin_tflite_ops, options.emit_select_tf_ops,
-      options.emit_custom_ops, options.select_user_tf_ops,
-      options.saved_model_tags, options.op_or_arg_name_mapper,
-      options.metadata);
+      options.emit_custom_ops, options.allow_all_select_tf_ops,
+      options.select_user_tf_ops, options.saved_model_tags,
+      options.op_or_arg_name_mapper, options.metadata);
   if (!maybe_translated) return false;
   *serialized_flatbuffer = std::move(*maybe_translated);
   return true;
